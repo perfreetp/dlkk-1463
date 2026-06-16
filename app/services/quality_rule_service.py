@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 import operator
 import re
 
-from ..models import QualityRule, RuleCategory, Examination, ImageQuality, BIRADSReport
+from ..models import QualityRule, RuleCategory, Examination, ImageQuality, BIRADSReport, AnomalyRecord
 from ..schemas import (
     QualityRuleCreate,
     QualityRuleUpdate,
@@ -193,7 +193,7 @@ class QualityRuleService:
         self.db = db
         self.rule_engine = RuleEngine()
 
-    def create_category(self, category_data: RuleCategoryCreate) -> RuleCategory:
+    def create_category(self, category_data: RuleCategoryCreate, created_by: Optional[int] = None) -> RuleCategory:
         existing = self.db.query(RuleCategory).filter(
             RuleCategory.code == category_data.code,
             RuleCategory.is_deleted == False,
@@ -202,13 +202,15 @@ class QualityRuleService:
             raise ValidationError(f"分类编码已存在: {category_data.code}")
 
         category = RuleCategory(**category_data.model_dump())
+        if created_by:
+            category.created_by = created_by
         self.db.add(category)
         self.db.commit()
         self.db.refresh(category)
         logger.info(f"Created rule category: {category.code}")
         return category
 
-    def update_category(self, category_id: int, update_data: RuleCategoryUpdate) -> RuleCategory:
+    def update_category(self, category_id: int, update_data: RuleCategoryUpdate, operator_id: Optional[int] = None) -> RuleCategory:
         category = self.db.query(RuleCategory).filter(
             RuleCategory.id == category_id,
             RuleCategory.is_deleted == False,
@@ -220,11 +222,34 @@ class QualityRuleService:
         for key, value in update_dict.items():
             setattr(category, key, value)
 
+        if operator_id:
+            category.updated_by = operator_id
+
         self.db.commit()
         self.db.refresh(category)
         return category
 
-    def get_category_tree(self) -> List[Dict[str, Any]]:
+    def list_categories(self, parent_id: Optional[int] = None, is_active: Optional[bool] = None) -> List[RuleCategory]:
+        query = self.db.query(RuleCategory).filter(RuleCategory.is_deleted == False)
+
+        if parent_id is not None:
+            query = query.filter(RuleCategory.parent_id == parent_id)
+        if is_active is not None:
+            query = query.filter(RuleCategory.is_active == is_active)
+
+        categories = query.order_by(RuleCategory.sort_order).all()
+        return categories
+
+    def get_category(self, category_id: int) -> RuleCategory:
+        category = self.db.query(RuleCategory).filter(
+            RuleCategory.id == category_id,
+            RuleCategory.is_deleted == False,
+        ).first()
+        if not category:
+            raise NotFoundError(f"分类不存在: {category_id}")
+        return category
+
+    def get_category_tree(self, hospital_id: Optional[int] = None) -> List[Dict[str, Any]]:
         categories = self.db.query(RuleCategory).filter(
             RuleCategory.is_deleted == False,
             RuleCategory.is_active == True,
@@ -263,7 +288,7 @@ class QualityRuleService:
         logger.info(f"Created quality rule: {rule.code}")
         return rule
 
-    def update_rule(self, rule_id: int, update_data: QualityRuleUpdate) -> QualityRule:
+    def update_rule(self, rule_id: int, update_data: QualityRuleUpdate, operator_id: Optional[int] = None) -> QualityRule:
         rule = self.db.query(QualityRule).filter(
             QualityRule.id == rule_id,
             QualityRule.is_deleted == False,
@@ -274,6 +299,9 @@ class QualityRuleService:
         update_dict = update_data.model_dump(exclude_unset=True)
         for key, value in update_dict.items():
             setattr(rule, key, value)
+
+        if operator_id:
+            rule.updated_by = operator_id
 
         self.db.commit()
         self.db.refresh(rule)
@@ -291,8 +319,11 @@ class QualityRuleService:
     def list_rules(
         self,
         category_id: Optional[int] = None,
+        hospital_id: Optional[int] = None,
         rule_type: Optional[str] = None,
+        severity: Optional[str] = None,
         is_active: Optional[bool] = None,
+        keyword: Optional[str] = None,
         is_standard: Optional[bool] = None,
         skip: int = 0,
         limit: int = 20,
@@ -303,10 +334,17 @@ class QualityRuleService:
             query = query.filter(QualityRule.category_id == category_id)
         if rule_type:
             query = query.filter(QualityRule.rule_type == rule_type)
+        if severity:
+            query = query.filter(QualityRule.severity_level == severity)
         if is_active is not None:
             query = query.filter(QualityRule.is_active == is_active)
         if is_standard is not None:
             query = query.filter(QualityRule.is_standard == is_standard)
+        if keyword:
+            keyword_pattern = f"%{keyword}%"
+            query = query.filter(
+                (QualityRule.code.like(keyword_pattern)) | (QualityRule.name.like(keyword_pattern))
+            )
 
         total = query.count()
         rules = query.order_by(QualityRule.created_at.desc()).offset(skip).limit(limit).all()
@@ -384,3 +422,153 @@ class QualityRuleService:
             QualityRule.is_active == True,
             QualityRule.is_standard == True,
         ).all()
+
+    def toggle_rule_active(self, rule_id: int, is_active: bool, operator_id: Optional[int] = None) -> QualityRule:
+        rule = self.get_rule(rule_id)
+        rule.is_active = is_active
+        if operator_id:
+            rule.updated_by = operator_id
+        self.db.commit()
+        self.db.refresh(rule)
+        logger.info(f"Toggled rule {rule.code} active status to {is_active}")
+        return rule
+
+    def apply_rules_to_examination(self, exam_id: int, rule_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+        examination = self.db.query(Examination).filter(
+            Examination.id == exam_id,
+            Examination.is_deleted == False,
+        ).first()
+        if not examination:
+            raise NotFoundError(f"检查记录不存在: {exam_id}")
+
+        if rule_ids:
+            rules = self.db.query(QualityRule).filter(
+                QualityRule.id.in_(rule_ids),
+                QualityRule.is_deleted == False,
+                QualityRule.is_active == True,
+            ).all()
+        else:
+            rules = self.get_active_rules()
+
+        results = []
+        for rule in rules:
+            try:
+                passed, details = self.apply_rule_to_examination(rule, examination)
+                self.update_rule_stats(rule.id, passed)
+            except Exception as e:
+                logger.error(f"Error applying rule {rule.code} to exam {exam_id}: {e}")
+                passed = False
+                details = {"error": str(e)}
+            results.append({
+                "rule_id": rule.id,
+                "rule_name": rule.name,
+                "passed": passed,
+                "details": details,
+            })
+        return results
+
+    def get_rule_statistics(
+        self,
+        rule_id: int,
+        hospital_id: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        rule = self.get_rule(rule_id)
+
+        query = self.db.query(AnomalyRecord).filter(
+            AnomalyRecord.rule_id == rule_id,
+            AnomalyRecord.is_deleted == False,
+        )
+
+        if hospital_id:
+            query = query.filter(AnomalyRecord.hospital_id == hospital_id)
+        if start_date:
+            query = query.filter(AnomalyRecord.detected_at >= start_date)
+        if end_date:
+            query = query.filter(AnomalyRecord.detected_at <= end_date)
+
+        anomaly_count = query.count()
+        pass_count = rule.pass_count or 0
+        failure_count = rule.failure_count or 0
+        total_count = pass_count + failure_count
+        pass_rate = (pass_count / total_count * 100) if total_count > 0 else 0.0
+
+        return {
+            "rule_id": rule_id,
+            "rule_name": rule.name,
+            "pass_count": pass_count,
+            "failure_count": failure_count,
+            "total_count": total_count,
+            "pass_rate": round(pass_rate, 2),
+            "anomaly_triggered_count": anomaly_count,
+        }
+
+    def publish_rules(
+        self,
+        rule_ids: List[int],
+        target_hospital_ids: List[int],
+        operator_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        rules = self.db.query(QualityRule).filter(
+            QualityRule.id.in_(rule_ids),
+            QualityRule.is_deleted == False,
+        ).all()
+
+        published_count = 0
+        for rule in rules:
+            rule.applicable_hospitals = target_hospital_ids
+            if operator_id:
+                rule.updated_by = operator_id
+            published_count += 1
+
+        self.db.commit()
+        logger.info(f"Published {published_count} rules to hospitals: {target_hospital_ids}")
+
+        return {
+            "published_count": published_count,
+            "rule_ids": [r.id for r in rules],
+            "target_hospitals": target_hospital_ids,
+        }
+
+    def get_rule_execution_history(
+        self,
+        rule_id: Optional[int] = None,
+        hospital_id: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 20,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        query = self.db.query(AnomalyRecord).filter(AnomalyRecord.is_deleted == False)
+
+        if rule_id:
+            query = query.filter(AnomalyRecord.rule_id == rule_id)
+        if hospital_id:
+            query = query.filter(AnomalyRecord.hospital_id == hospital_id)
+        if start_date:
+            query = query.filter(AnomalyRecord.detected_at >= start_date)
+        if end_date:
+            query = query.filter(AnomalyRecord.detected_at <= end_date)
+
+        total = query.count()
+        records = query.order_by(AnomalyRecord.detected_at.desc()).offset(skip).limit(limit).all()
+
+        result = []
+        for ar in records:
+            rule = None
+            if ar.rule_id:
+                rule = self.db.query(QualityRule).filter(QualityRule.id == ar.rule_id).first()
+            result.append({
+                "id": ar.id,
+                "rule_id": ar.rule_id,
+                "rule_name": rule.name if rule else "",
+                "examination_id": ar.examination_id,
+                "hospital_id": ar.hospital_id,
+                "anomaly_type": ar.anomaly_type,
+                "severity_level": ar.severity_level,
+                "detected_at": ar.detected_at,
+                "is_confirmed": ar.is_confirmed,
+            })
+
+        return result, total

@@ -10,8 +10,10 @@ class ReviewTask(BaseModel, TimestampMixin, SoftDeleteMixin):
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
     examination_id = Column(Integer, ForeignKey("examinations.id"), nullable=True, index=True)
+    anomaly_id = Column(Integer, ForeignKey("anomaly_records.id"), nullable=True, index=True)
     creator_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    assignee_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    assignee_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    assigned_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     task_code = Column(String(100), unique=True, nullable=False, index=True)
     task_type = Column(String(50), nullable=False, index=True)
@@ -25,16 +27,20 @@ class ReviewTask(BaseModel, TimestampMixin, SoftDeleteMixin):
     check_items = Column(JSON)
 
     due_date = Column(Date, index=True)
+    deadline = Column(Date, index=True)
     reminder_date = Column(Date)
 
     status = Column(String(20), default="pending", index=True)
     workflow_state = Column(String(50), default="assigned", index=True)
 
-    assigned_at = Column(DateTime, default=datetime.utcnow)
+    assigned_at = Column(DateTime)
     accepted_at = Column(DateTime)
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
     overdue_at = Column(DateTime)
+    rejected_at = Column(DateTime)
+    escalated_at = Column(DateTime)
+    escalated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     is_overdue = Column(Boolean, default=False, index=True)
     is_urgent = Column(Boolean, default=False)
@@ -42,6 +48,7 @@ class ReviewTask(BaseModel, TimestampMixin, SoftDeleteMixin):
     completion_notes = Column(Text)
     rejection_reason = Column(Text)
     escalation_reason = Column(Text)
+    assignment_remark = Column(Text)
 
     review_count = Column(Integer, default=0)
     max_reviews = Column(Integer, default=1)
@@ -106,6 +113,7 @@ class Rectification(BaseModel, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "rectifications"
 
     review_task_id = Column(Integer, ForeignKey("review_tasks.id"), unique=True, nullable=False, index=True)
+    anomaly_id = Column(Integer, ForeignKey("anomaly_records.id"), nullable=True, index=True)
 
     rectification_code = Column(String(100), unique=True, nullable=False, index=True)
     title = Column(String(200), nullable=False)
@@ -120,7 +128,9 @@ class Rectification(BaseModel, TimestampMixin, SoftDeleteMixin):
     priority = Column(String(20), default="high")
 
     responsible_person = Column(String(100))
+    responsible_person_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     responsible_department = Column(String(200))
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     implementation_plan = Column(Text)
     measures = Column(JSON)
@@ -130,10 +140,23 @@ class Rectification(BaseModel, TimestampMixin, SoftDeleteMixin):
     progress_description = Column(Text)
     update_records = Column(JSON)
 
+    started_at = Column(DateTime)
+    submitted_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    failed_at = Column(DateTime)
+    failed_reason = Column(Text)
+    failure_reason = Column(Text)
+
     verification_result = Column(String(20), index=True)
-    verified_by = Column(Integer)
+    verification_passed = Column(Boolean, default=False)
+    verification_comment = Column(Text)
+    verified_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     verified_at = Column(DateTime)
     verification_notes = Column(Text)
+
+    rejected_at = Column(DateTime)
+    rejected_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    rejection_reason = Column(Text)
 
     is_closed = Column(Boolean, default=False, index=True)
     closed_at = Column(DateTime)
@@ -141,5 +164,7 @@ class Rectification(BaseModel, TimestampMixin, SoftDeleteMixin):
     closing_notes = Column(Text)
 
     hospital_id = Column(Integer, index=True)
+    anomaly_type = Column(String(50))
+    severity_level = Column(String(20))
 
     review_task = relationship("ReviewTask", back_populates="rectification")

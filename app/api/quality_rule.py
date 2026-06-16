@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -86,6 +86,74 @@ async def update_category(
     return ApiResponse(data=RuleCategoryResponse.model_validate(category), message="规则分类更新成功")
 
 
+@router.get("/active", response_model=ApiResponse[List[QualityRuleResponse]])
+@require_permission("rule:read")
+async def get_active_rules(
+    rule_type: Optional[str] = None,
+    hospital_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rule_service = QualityRuleService(db)
+    rules = rule_service.get_active_rules(rule_type=rule_type, hospital_id=hospital_id)
+    return ApiResponse(data=[QualityRuleResponse.model_validate(r) for r in rules])
+
+
+@router.post("/apply", response_model=ApiResponse[List[dict]])
+@require_permission("rule:manage")
+async def apply_rules(
+    apply_data: QualityRuleApplyRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rule_service = QualityRuleService(db)
+    results = rule_service.apply_rules_to_examination(
+        exam_id=apply_data.exam_id,
+        rule_ids=apply_data.rule_ids,
+    )
+    return ApiResponse(data=results)
+
+
+@router.post("/publish", response_model=ApiResponse[dict])
+@require_permission("rule:manage")
+async def publish_rules(
+    rule_ids: List[int] = Query(..., description="规则ID列表"),
+    target_hospital_ids: List[int] = Query(..., description="目标医院ID列表"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rule_service = QualityRuleService(db)
+    result = rule_service.publish_rules(
+        rule_ids=rule_ids,
+        target_hospital_ids=target_hospital_ids,
+        operator_id=current_user.id,
+    )
+    return ApiResponse(data=result, message="规则下发成功")
+
+
+@router.get("/execution-history", response_model=ApiResponse[dict])
+@require_permission("rule:read")
+async def get_rule_execution_history(
+    rule_id: Optional[int] = None,
+    hospital_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    pagination: PaginationParams = Depends(),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rule_service = QualityRuleService(db)
+    history, total = rule_service.get_rule_execution_history(
+        rule_id=rule_id,
+        hospital_id=hospital_id,
+        start_date=start_date,
+        end_date=end_date,
+        skip=pagination.offset,
+        limit=pagination.limit,
+    )
+    return ApiResponse(data=paginate(history, total, pagination))
+
+
 @router.get("", response_model=ApiResponse[dict])
 @require_permission("rule:read")
 async def list_rules(
@@ -107,7 +175,7 @@ async def list_rules(
         severity=severity,
         is_active=is_active,
         keyword=keyword,
-        skip=pagination.skip,
+        skip=pagination.offset,
         limit=pagination.limit,
     )
     return ApiResponse(data=paginate(
@@ -115,19 +183,6 @@ async def list_rules(
         total,
         pagination,
     ))
-
-
-@router.get("/active", response_model=ApiResponse[List[QualityRuleResponse]])
-@require_permission("rule:read")
-async def get_active_rules(
-    rule_type: Optional[str] = None,
-    hospital_id: Optional[int] = None,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    rule_service = QualityRuleService(db)
-    rules = rule_service.get_active_rules(rule_type=rule_type, hospital_id=hospital_id)
-    return ApiResponse(data=[QualityRuleResponse.model_validate(r) for r in rules])
 
 
 @router.post("", response_model=ApiResponse[QualityRuleResponse])
@@ -171,7 +226,7 @@ async def update_rule(
 @require_permission("rule:manage")
 async def toggle_rule_active(
     rule_id: int,
-    is_active: bool,
+    is_active: bool = Query(..., description="是否激活"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -193,21 +248,6 @@ async def test_rule(
     return ApiResponse(data=result)
 
 
-@router.post("/apply", response_model=ApiResponse[List[dict]])
-@require_permission("rule:manage")
-async def apply_rules(
-    apply_data: QualityRuleApplyRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    rule_service = QualityRuleService(db)
-    results = rule_service.apply_rules_to_examination(
-        exam_id=apply_data.exam_id,
-        rule_ids=apply_data.rule_ids,
-    )
-    return ApiResponse(data=results)
-
-
 @router.get("/{rule_id}/statistics", response_model=ApiResponse[dict])
 @require_permission("rule:read")
 async def get_rule_statistics(
@@ -226,43 +266,3 @@ async def get_rule_statistics(
         end_date=end_date,
     )
     return ApiResponse(data=stats)
-
-
-@router.post("/publish", response_model=ApiResponse[dict])
-@require_permission("rule:manage")
-async def publish_rules(
-    rule_ids: List[int],
-    target_hospital_ids: List[int],
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    rule_service = QualityRuleService(db)
-    result = rule_service.publish_rules(
-        rule_ids=rule_ids,
-        target_hospital_ids=target_hospital_ids,
-        operator_id=current_user.id,
-    )
-    return ApiResponse(data=result, message="规则下发成功")
-
-
-@router.get("/execution-history", response_model=ApiResponse[dict])
-@require_permission("rule:read")
-async def get_rule_execution_history(
-    rule_id: Optional[int] = None,
-    hospital_id: Optional[int] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    pagination: PaginationParams = Depends(),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    rule_service = QualityRuleService(db)
-    history, total = rule_service.get_rule_execution_history(
-        rule_id=rule_id,
-        hospital_id=hospital_id,
-        start_date=start_date,
-        end_date=end_date,
-        skip=pagination.skip,
-        limit=pagination.limit,
-    )
-    return ApiResponse(data=paginate(history, total, pagination))

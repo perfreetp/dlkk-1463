@@ -49,35 +49,111 @@ def extract_keywords(text: str, top_k: int = 20) -> List[str]:
         return [word for word, _ in Counter(words).most_common(top_k)]
 
 
+def _tokenize_chinese(text: str) -> List[str]:
+    try:
+        import jieba
+        words = list(jieba.cut(text))
+        result = [w.strip() for w in words if len(w.strip()) >= 2 and not re.match(r'^[\s\d]+$', w.strip())]
+        if result and len(result) >= 2:
+            return result
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    ngrams = []
+    for n in [2, 3]:
+        for i in range(len(text) - n + 1):
+            ngram = text[i:i+n]
+            if re.match(r'^[\u4e00-\u9fa5]+$', ngram):
+                ngrams.append(ngram)
+    if ngrams:
+        return ngrams
+
+    words = re.findall(r"[\u4e00-\u9fa5]{2,}|[a-zA-Z]{3,}", text)
+    if words:
+        return words
+
+    return list(text) if text else []
+
+
 def calculate_text_similarity(text1: str, text2: str, method: str = "cosine") -> float:
     if not text1 or not text2:
         return 0.0
 
-    try:
-        import textdistance
+    text1_clean = clean_text(text1)
+    text2_clean = clean_text(text2)
 
-        text1_clean = clean_text(text1)
-        text2_clean = clean_text(text2)
-
-        if not text1_clean or not text2_clean:
-            return 0.0
-
-        if method == "jaccard":
-            return textdistance.jaccard.normalized_similarity(text1_clean, text2_clean)
-        elif method == "cosine":
-            words1 = set(text1_clean.split())
-            words2 = set(text2_clean.split())
-            if not words1 or not words2:
-                return 0.0
-            intersection = len(words1 & words2)
-            union = len(words1 | words2)
-            return intersection / union if union > 0 else 0.0
-        elif method == "levenshtein":
-            return textdistance.levenshtein.normalized_similarity(text1_clean, text2_clean)
-        else:
-            return textdistance.cosine.normalized_similarity(text1_clean, text2_clean)
-    except ImportError:
+    if not text1_clean or not text2_clean:
         return 0.0
+
+    tokens1 = _tokenize_chinese(text1_clean)
+    tokens2 = _tokenize_chinese(text2_clean)
+
+    if not tokens1 or not tokens2:
+        return 0.0
+
+    if method == "jaccard":
+        set1 = set(tokens1)
+        set2 = set(tokens2)
+        if not set1 or not set2:
+            return 0.0
+        return len(set1 & set2) / len(set1 | set2)
+
+    elif method == "cosine":
+        from collections import Counter
+        counter1 = Counter(tokens1)
+        counter2 = Counter(tokens2)
+        all_words = set(counter1.keys()) | set(counter2.keys())
+        if not all_words:
+            return 0.0
+        dot_product = sum(counter1.get(w, 0) * counter2.get(w, 0) for w in all_words)
+        norm1 = sum(v ** 2 for v in counter1.values()) ** 0.5
+        norm2 = sum(v ** 2 for v in counter2.values()) ** 0.5
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        return dot_product / (norm1 * norm2)
+
+    elif method == "levenshtein":
+        try:
+            import textdistance
+            return textdistance.levenshtein.normalized_similarity(text1_clean, text2_clean)
+        except ImportError:
+            s1, s2 = text1_clean, text2_clean
+            if len(s1) < len(s2):
+                s1, s2 = s2, s1
+            if len(s2) == 0:
+                return 0.0
+            previous_row = list(range(len(s2) + 1))
+            for i, c1 in enumerate(s1):
+                current_row = [i + 1]
+                for j, c2 in enumerate(s2):
+                    insertions = previous_row[j + 1] + 1
+                    deletions = current_row[j] + 1
+                    substitutions = previous_row[j] + (c1 != c2)
+                    current_row.append(min(insertions, deletions, substitutions))
+                previous_row = current_row
+            distance = previous_row[-1]
+            max_len = max(len(s1), len(s2))
+            return 1.0 - (distance / max_len) if max_len > 0 else 0.0
+
+    else:
+        try:
+            import textdistance
+            return textdistance.cosine.normalized_similarity(tokens1, tokens2)
+        except ImportError:
+            from collections import Counter
+            counter1 = Counter(tokens1)
+            counter2 = Counter(tokens2)
+            all_words = set(counter1.keys()) | set(counter2.keys())
+            if not all_words:
+                return 0.0
+            dot_product = sum(counter1.get(w, 0) * counter2.get(w, 0) for w in all_words)
+            norm1 = sum(v ** 2 for v in counter1.values()) ** 0.5
+            norm2 = sum(v ** 2 for v in counter2.values()) ** 0.5
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
+            return dot_product / (norm1 * norm2)
 
 
 def json_default(obj: Any) -> Any:

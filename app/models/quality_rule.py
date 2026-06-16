@@ -14,6 +14,9 @@ class RuleCategory(BaseModel, TimestampMixin, SoftDeleteMixin):
     sort_order = Column(SmallInteger, default=0)
     is_active = Column(Boolean, default=True, nullable=False)
 
+    created_by = Column(Integer)
+    updated_by = Column(Integer)
+
     rules = relationship("QualityRule", back_populates="category")
     parent = relationship("RuleCategory", remote_side="RuleCategory.id", back_populates="children")
     children = relationship("RuleCategory", back_populates="parent")
@@ -51,6 +54,7 @@ class QualityRule(BaseModel, TimestampMixin, SoftDeleteMixin):
     pass_count = Column(Integer, default=0)
 
     created_by = Column(Integer)
+    updated_by = Column(Integer)
     approved_by = Column(Integer)
     approved_at = Column(String(20))
 

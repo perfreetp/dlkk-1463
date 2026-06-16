@@ -259,13 +259,14 @@ async def toggle_excellent_case_active(
 ):
     benchmark_service = BenchmarkService(db)
     case = benchmark_service.get_excellent_case(case_id)
-    case.is_approved = not case.is_approved
-    if case.is_approved:
+    is_approved = case.status == "approved"
+    case.status = "draft" if is_approved else "approved"
+    if not is_approved:
         case.approved_by = current_user.id
         case.approved_at = datetime.utcnow()
     db.commit()
     db.refresh(case)
-    status_text = "激活" if case.is_approved else "停用"
+    status_text = "激活" if case.status == "approved" else "停用"
     return ApiResponse(data=BestPracticeResponse.model_validate(case), message=f"优秀案例{status_text}成功")
 
 

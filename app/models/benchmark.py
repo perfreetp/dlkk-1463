@@ -13,6 +13,11 @@ class BenchmarkData(BaseModel, TimestampMixin, SoftDeleteMixin):
     doctor_id = Column(Integer, ForeignKey("doctors.id"), nullable=True, index=True)
     room_id = Column(Integer, nullable=True, index=True)
 
+    hospital_name = Column(String(200))
+    equipment_name = Column(String(200))
+    technician_name = Column(String(100))
+    doctor_name = Column(String(100))
+
     benchmark_year = Column(Integer, nullable=False, index=True)
     benchmark_month = Column(Integer, nullable=False, index=True)
     benchmark_period = Column(String(20), nullable=False, index=True)
@@ -82,6 +87,7 @@ class PersistentAnomalyRoom(BaseModel, TimestampMixin, SoftDeleteMixin):
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
     room_id = Column(Integer, ForeignKey("rooms.id"), nullable=False, index=True)
 
+    hospital_name = Column(String(200))
     room_code = Column(String(50), nullable=False)
     room_name = Column(String(100), nullable=False)
 
@@ -128,6 +134,7 @@ class BestPractice(BaseModel, TimestampMixin, SoftDeleteMixin):
 
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=False, index=True)
 
+    hospital_name = Column(String(200))
     practice_code = Column(String(100), unique=True, nullable=False, index=True)
     title = Column(String(200), nullable=False)
     practice_type = Column(String(50), index=True)

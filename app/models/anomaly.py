@@ -35,6 +35,8 @@ class AnomalyRecord(BaseModel, TimestampMixin, SoftDeleteMixin):
     correction_suggestion = Column(Text)
     correction_status = Column(String(20), default="pending", index=True)
     corrected_at = Column(DateTime)
+    rectification_id = Column(Integer, ForeignKey("rectifications.id"), nullable=True, index=True)
+    review_comment = Column(Text)
 
     hospital_id = Column(Integer, index=True)
     equipment_id = Column(Integer, index=True)

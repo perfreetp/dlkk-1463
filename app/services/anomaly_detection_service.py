@@ -200,6 +200,39 @@ class QualityChecker:
             issues.append("报告提示有钙化但缺乏详细描述")
             affected_fields.append("calcification_description")
 
+        if br.findings_summary:
+            findings = br.findings_summary.strip()
+            if len(findings) < 5:
+                issues.append("征象描述内容过短，描述不充分")
+                affected_fields.append("findings_summary")
+            keywords = extract_keywords(findings, top_k=10)
+            if len(keywords) < 2:
+                issues.append("征象描述缺乏有效医学关键词")
+                if "findings_summary" not in affected_fields:
+                    affected_fields.append("findings_summary")
+
+        if br.impression:
+            impression = br.impression.strip()
+            if len(impression) < 3:
+                issues.append("诊断印象内容过短")
+                affected_fields.append("impression")
+
+        if br.birads_classification and br.findings_summary:
+            birads_upper = br.birads_classification.upper()
+            findings_lower = br.findings_summary.lower()
+            if birads_upper in ["1", "2"]:
+                positive_keywords = ["肿块", "钙化", "结节", "异常", "占位", "病变", "扭曲", "不对称"]
+                found_positive = [kw for kw in positive_keywords if kw in br.findings_summary]
+                if found_positive:
+                    issues.append(f"BI-RADS {br.birads_classification}（阴性）报告中包含阳性描述词: {', '.join(found_positive)}")
+                    affected_fields.extend(["birads_classification", "findings_summary"])
+            elif birads_upper in ["4", "4A", "4B", "4C", "5", "6"]:
+                negative_patterns = ["未见明显异常", "未见异常", "未见明确异常", "未见明显占位", "未见明显病变"]
+                found_negative = [p for p in negative_patterns if p in br.findings_summary]
+                if found_negative:
+                    issues.append(f"BI-RADS {br.birads_classification}（阳性）报告中包含阴性描述: {', '.join(found_negative)}")
+                    affected_fields.extend(["birads_classification", "findings_summary"])
+
         if issues:
             severity = "high" if len(issues) >= 3 else "medium"
             risk_score = 8 if severity == "high" else 5
@@ -218,13 +251,16 @@ class QualityChecker:
                     "description_quality_score": br.description_quality_score,
                     "issues": issues,
                 },
-                "affected_fields": affected_fields,
+                "affected_fields": list(set(affected_fields)),
                 "correction_suggestion": "请按照集团标准规范填写报告",
             }
         return None
 
 
 class SimilarityChecker:
+    HIGH_DISCREPANCY_THRESHOLD = 0.3
+    DISCREPANCY_THRESHOLD = 0.5
+
     def __init__(self, db: Session):
         self.db = db
         self.threshold = settings.QC_SIMILARITY_THRESHOLD
@@ -238,53 +274,100 @@ class SimilarityChecker:
         if not exam.birads_report or not exam.birads_report.findings_summary:
             return []
 
-        source_text = clean_text(exam.birads_report.findings_summary)
+        source_findings = clean_text(exam.birads_report.findings_summary or "")
+        source_impression = clean_text(exam.birads_report.impression or "")
         source_birads = exam.birads_report.birads_classification
-        source_density = exam.birads_report.breast_density
+
+        if not source_birads:
+            return []
 
         query = self.db.query(Examination).join(BIRADSReport).filter(
             Examination.id != exam.id,
             Examination.is_deleted == False,
             BIRADSReport.is_deleted == False,
-            BIRADSReport.findings_summary.isnot(None),
             BIRADSReport.birads_classification == source_birads,
+            or_(
+                BIRADSReport.findings_summary.isnot(None),
+                BIRADSReport.impression.isnot(None),
+            ),
         )
 
         if hospital_id:
             query = query.filter(Examination.hospital_id == hospital_id)
 
         if exam.examination_date:
-            date_from = exam.examination_date - timedelta(days=90)
-            date_to = exam.examination_date + timedelta(days=90)
+            date_from = exam.examination_date - timedelta(days=180)
+            date_to = exam.examination_date + timedelta(days=180)
             query = query.filter(
                 Examination.examination_date >= date_from,
                 Examination.examination_date <= date_to,
             )
 
-        similar_reports = []
-        for target_exam in query.limit(limit * 3).all():
+        candidate_reports = []
+        for target_exam in query.limit(limit * 10).all():
             if not target_exam.birads_report:
                 continue
 
-            target_text = clean_text(target_exam.birads_report.findings_summary)
-            if not target_text:
+            target_findings = clean_text(target_exam.birads_report.findings_summary or "")
+            target_impression = clean_text(target_exam.birads_report.impression or "")
+
+            if not target_findings and not target_impression:
                 continue
 
-            similarity = calculate_text_similarity(source_text, target_text, method="cosine")
+            findings_sim = 0.0
+            impression_sim = 0.0
+            sim_count = 0
 
-            if similarity >= self.threshold:
-                field_sims = self._calculate_field_similarities(exam.birads_report, target_exam.birads_report)
+            if source_findings and target_findings:
+                findings_sim = calculate_text_similarity(source_findings, target_findings, method="cosine")
+                sim_count += 1
 
-                detail = {
-                    "field_similarities": field_sims,
-                    "common_findings": self._find_common_findings(source_text, target_text),
-                    "differing_findings": self._find_differing_findings(source_text, target_text),
-                }
+            if source_impression and target_impression:
+                impression_sim = calculate_text_similarity(source_impression, target_impression, method="cosine")
+                sim_count += 1
 
-                similar_reports.append((target_exam, similarity, detail))
+            if sim_count == 0:
+                continue
 
-        similar_reports.sort(key=lambda x: x[1], reverse=True)
-        return similar_reports[:limit]
+            overall_similarity = (findings_sim + impression_sim) / sim_count if sim_count > 0 else 0.0
+
+            field_sims = self._calculate_field_similarities(exam.birads_report, target_exam.birads_report)
+
+            source_combined = f"{source_findings} {source_impression}".strip()
+            target_combined = f"{target_findings} {target_impression}".strip()
+
+            common_findings = self._find_common_findings(source_combined, target_combined)
+            differing_findings = self._find_differing_findings(source_combined, target_combined)
+
+            differing_fields = []
+            if findings_sim < self.DISCREPANCY_THRESHOLD:
+                differing_fields.append("findings_summary")
+            if impression_sim < self.DISCREPANCY_THRESHOLD:
+                differing_fields.append("impression")
+            for field_name, sim_val in field_sims.items():
+                if sim_val < self.DISCREPANCY_THRESHOLD:
+                    differing_fields.append(field_name)
+
+            detail = {
+                "field_similarities": field_sims,
+                "findings_similarity": findings_sim,
+                "impression_similarity": impression_sim,
+                "common_findings": common_findings,
+                "differing_findings": differing_findings,
+                "differing_fields": differing_fields,
+                "description1": exam.birads_report.findings_summary or "",
+                "description2": target_exam.birads_report.findings_summary or "",
+                "processed_text1": source_findings,
+                "processed_text2": target_findings,
+                "keywords1": extract_keywords(source_combined, top_k=30),
+                "keywords2": extract_keywords(target_combined, top_k=30),
+                "common_keywords": common_findings,
+            }
+
+            candidate_reports.append((target_exam, overall_similarity, detail))
+
+        candidate_reports.sort(key=lambda x: x[1])
+        return candidate_reports[:limit]
 
     def _calculate_field_similarities(self, source: BIRADSReport, target: BIRADSReport) -> Dict[str, float]:
         sims = {}
@@ -322,67 +405,76 @@ class SimilarityChecker:
         exam: Examination,
         target_exam: Examination,
     ) -> SimilarityCheck:
-        similarity_data = self.find_similar_reports(exam, target_exam.hospital_id, limit=1)
-        if not similarity_data:
-            target = target_exam
-            score = calculate_text_similarity(
-                exam.birads_report.findings_summary or "",
-                target.birads_report.findings_summary or "",
-                method="cosine",
-            ) if (exam.birads_report and target.birads_report) else 0.0
-            field_sims = self._calculate_field_similarities(exam.birads_report, target.birads_report) if (exam.birads_report and target.birads_report) else {}
-            avg_sim = sum(field_sims.values()) / len(field_sims) if field_sims else score
-            is_suspicious = avg_sim >= self.threshold and avg_sim < 0.95
-
-            check = SimilarityCheck(
+        if not exam.birads_report or not target_exam.birads_report:
+            return SimilarityCheck(
                 examination_id=exam.id,
-                target_report_id=target.birads_report.id if target.birads_report else 0,
+                target_report_id=target_exam.birads_report.id if target_exam.birads_report else 0,
                 comparison_type="description_consistency",
-                similarity_score=avg_sim,
-                similarity_threshold=self.threshold,
-                is_suspicious=is_suspicious,
-                field_similarities=field_sims,
+                similarity_score=0.0,
+                similarity_threshold=self.DISCREPANCY_THRESHOLD,
+                is_suspicious=False,
                 check_method="text_similarity",
-                check_result="suspicious" if is_suspicious else "normal",
+                check_result="normal",
                 hospital_id=exam.hospital_id,
                 doctor_id=exam.doctor_id,
-                description1=exam.birads_report.findings_summary if exam.birads_report else "",
-                description2=target.birads_report.findings_summary if target.birads_report else "",
-                processed_text1=clean_text(exam.birads_report.findings_summary) if exam.birads_report else "",
-                processed_text2=clean_text(target.birads_report.findings_summary) if target.birads_report else "",
-                keywords1=extract_keywords(exam.birads_report.findings_summary or ""),
-                keywords2=extract_keywords(target.birads_report.findings_summary or ""),
-                common_keywords=self._find_common_findings(
-                    clean_text(exam.birads_report.findings_summary or ""),
-                    clean_text(target.birads_report.findings_summary or ""),
-                ),
-                common_findings=self._find_common_findings(
-                    clean_text(exam.birads_report.findings_summary or ""),
-                    clean_text(target.birads_report.findings_summary or ""),
-                ),
-                differing_findings=self._find_differing_findings(
-                    clean_text(exam.birads_report.findings_summary or ""),
-                    clean_text(target.birads_report.findings_summary or ""),
-                ),
+                notes="缺少报告数据，无法进行一致性检查",
             )
-            return check
 
-        target, score, detail = similarity_data[0]
-        avg_sim = sum(detail["field_similarities"].values()) / len(detail["field_similarities"]) if detail["field_similarities"] else score
-        is_suspicious = avg_sim >= self.threshold and avg_sim < 0.95
+        source_findings = clean_text(exam.birads_report.findings_summary or "")
+        source_impression = clean_text(exam.birads_report.impression or "")
+        target_findings = clean_text(target_exam.birads_report.findings_summary or "")
+        target_impression = clean_text(target_exam.birads_report.impression or "")
+
+        findings_sim = 0.0
+        impression_sim = 0.0
+        sim_count = 0
+
+        if source_findings and target_findings:
+            findings_sim = calculate_text_similarity(source_findings, target_findings, method="cosine")
+            sim_count += 1
+
+        if source_impression and target_impression:
+            impression_sim = calculate_text_similarity(source_impression, target_impression, method="cosine")
+            sim_count += 1
+
+        field_sims = self._calculate_field_similarities(exam.birads_report, target_exam.birads_report)
+        overall_score = (findings_sim + impression_sim) / sim_count if sim_count > 0 else (
+            sum(field_sims.values()) / len(field_sims) if field_sims else 0.0
+        )
+
+        is_suspicious = overall_score < self.DISCREPANCY_THRESHOLD
+
+        source_combined = f"{source_findings} {source_impression}".strip()
+        target_combined = f"{target_findings} {target_impression}".strip()
+
+        common_findings = self._find_common_findings(source_combined, target_combined)
+        differing_findings = self._find_differing_findings(source_combined, target_combined)
+
+        check_result = "suspicious" if is_suspicious else "normal"
+        notes = ""
+        if is_suspicious:
+            notes = f"同 BI-RADS {exam.birads_report.birads_classification} 分类报告描述差异过大"
 
         check = SimilarityCheck(
             examination_id=exam.id,
-            target_report_id=target.birads_report.id if target.birads_report else 0,
+            target_report_id=target_exam.birads_report.id,
             comparison_type="description_consistency",
-            similarity_score=avg_sim,
-            similarity_threshold=self.threshold,
+            similarity_score=overall_score,
+            similarity_threshold=self.DISCREPANCY_THRESHOLD,
             is_suspicious=is_suspicious,
-            field_similarities=detail["field_similarities"],
-            common_findings=detail["common_findings"],
-            differing_findings=detail["differing_findings"],
+            field_similarities=field_sims,
+            common_findings=common_findings,
+            differing_findings=differing_findings,
+            description1=exam.birads_report.findings_summary or "",
+            description2=target_exam.birads_report.findings_summary or "",
+            processed_text1=source_findings,
+            processed_text2=target_findings,
+            keywords1=extract_keywords(source_combined, top_k=30),
+            keywords2=extract_keywords(target_combined, top_k=30),
+            common_keywords=common_findings,
             check_method="text_similarity",
-            check_result="suspicious" if is_suspicious else "normal",
+            check_result=check_result,
+            notes=notes,
             hospital_id=exam.hospital_id,
             doctor_id=exam.doctor_id,
         )
@@ -399,6 +491,7 @@ class AnomalyDetectionService:
 
     def detect_anomalies(self, exam: Examination, auto_create_review: bool = False) -> List[AnomalyRecord]:
         anomalies = []
+        similarity_checks_to_add = []
 
         position_anomaly = self.quality_checker.check_position_integrity(exam)
         if position_anomaly:
@@ -420,6 +513,39 @@ class AnomalyDetectionService:
             anomaly = self._create_anomaly_record(exam, report_anomaly)
             anomalies.append(anomaly)
 
+        if exam.birads_report and exam.birads_report.birads_classification:
+            discrepant_reports = self.similarity_checker.find_similar_reports(exam, exam.hospital_id, limit=3)
+            for target, score, detail in discrepant_reports:
+                check = self.similarity_checker.check_description_consistency(exam, target)
+                similarity_checks_to_add.append(check)
+
+                if check.is_suspicious:
+                    severity_level = "high" if score < SimilarityChecker.HIGH_DISCREPANCY_THRESHOLD else "medium"
+                    risk_score = 8 if severity_level == "high" else 6
+                    anomaly_type = "report_consistency" if score < SimilarityChecker.HIGH_DISCREPANCY_THRESHOLD else "description_discrepancy"
+
+                    consistency_anomaly_data = {
+                        "anomaly_type": anomaly_type,
+                        "anomaly_category": "description_inconsistency",
+                        "description": f"同 BI-RADS {exam.birads_report.birads_classification} 分类报告描述差异过大，与检查 {target.accession_number} 相似度为 {score:.2f}",
+                        "severity_level": severity_level,
+                        "risk_score": risk_score,
+                        "detail_data": {
+                            "similarity_score": score,
+                            "target_exam_id": target.id,
+                            "target_accession": target.accession_number,
+                            "target_birads_classification": target.birads_report.birads_classification if target.birads_report else None,
+                            "field_similarities": detail.get("field_similarities", {}),
+                            "differing_fields": detail.get("differing_fields", []),
+                            "common_findings": detail.get("common_findings", []),
+                            "differing_findings": detail.get("differing_findings", []),
+                        },
+                        "affected_fields": detail.get("differing_fields", ["findings_summary", "impression"]),
+                        "correction_suggestion": "请核实报告描述的准确性和一致性，相同BI-RADS分类的报告描述不应有显著差异",
+                    }
+                    anomaly = self._create_anomaly_record(exam, consistency_anomaly_data)
+                    anomalies.append(anomaly)
+
         rules = self.rule_service.get_active_rules(hospital_id=exam.hospital_id)
         for rule in rules:
             passed, detail = self.rule_service.apply_rule_to_examination(rule, exam)
@@ -439,6 +565,8 @@ class AnomalyDetectionService:
                 anomalies.append(anomaly)
 
         self.db.add_all(anomalies)
+        if similarity_checks_to_add:
+            self.db.add_all(similarity_checks_to_add)
         self.db.commit()
 
         for anomaly in anomalies:
@@ -581,29 +709,39 @@ class AnomalyDetectionService:
         if not exam:
             raise NotFoundError(f"检查不存在: {exam_id}")
 
-        similar_reports = self.similarity_checker.find_similar_reports(exam, exam.hospital_id)
+        discrepant_reports = self.similarity_checker.find_similar_reports(exam, exam.hospital_id)
         checks = []
 
-        for target, score, detail in similar_reports:
+        for target, score, detail in discrepant_reports:
             check = self.similarity_checker.check_description_consistency(exam, target)
             self.db.add(check)
             checks.append(check)
 
             if check.is_suspicious:
+                severity_level = "high" if score < SimilarityChecker.HIGH_DISCREPANCY_THRESHOLD else "medium"
+                risk_score = 8 if severity_level == "high" else 6
+                anomaly_type = "report_consistency" if score < SimilarityChecker.HIGH_DISCREPANCY_THRESHOLD else "description_discrepancy"
+
                 anomaly_data = {
-                    "anomaly_type": "similarity",
+                    "anomaly_type": anomaly_type,
                     "anomaly_category": "description_inconsistency",
-                    "description": f"同类征象描述差异过大，与{target.accession_number}相似度为{score:.2f}",
-                    "severity_level": "medium",
-                    "risk_score": 6,
+                    "description": f"同 BI-RADS {exam.birads_report.birads_classification if exam.birads_report else 'N/A'} 分类报告描述差异过大，与检查 {target.accession_number} 相似度为 {score:.2f}",
+                    "severity_level": severity_level,
+                    "risk_score": risk_score,
                     "detail_data": {
                         "similarity_score": score,
                         "target_exam_id": target.id,
                         "target_accession": target.accession_number,
-                        "field_similarities": detail["field_similarities"],
+                        "target_birads_classification": target.birads_report.birads_classification if target.birads_report else None,
+                        "field_similarities": detail.get("field_similarities", {}),
+                        "differing_fields": detail.get("differing_fields", []),
+                        "common_findings": detail.get("common_findings", []),
+                        "differing_findings": detail.get("differing_findings", []),
+                        "findings_similarity": detail.get("findings_similarity"),
+                        "impression_similarity": detail.get("impression_similarity"),
                     },
-                    "affected_fields": ["findings_summary", "impression"],
-                    "correction_suggestion": "请核实报告描述的准确性和一致性",
+                    "affected_fields": detail.get("differing_fields", ["findings_summary", "impression"]),
+                    "correction_suggestion": "请核实报告描述的准确性和一致性，相同BI-RADS分类的报告描述不应有显著差异",
                 }
                 anomaly = self._create_anomaly_record(exam, anomaly_data)
                 self.db.add(anomaly)

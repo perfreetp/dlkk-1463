@@ -81,7 +81,7 @@ async def list_examinations(
         laterality=laterality,
         birads_classification=birads_classification,
         has_anomaly=has_anomaly,
-        skip=pagination.skip,
+        skip=pagination.offset,
         limit=pagination.limit,
     )
     return ApiResponse(data=paginate(
@@ -89,57 +89,6 @@ async def list_examinations(
         total,
         pagination,
     ))
-
-
-@router.get("/{exam_id}", response_model=ApiResponse[ExaminationResponse])
-@require_permission("examination:read")
-async def get_examination(
-    exam_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    exam_service = ExaminationService(db)
-    exam = exam_service.get_examination_with_details(exam_id)
-    return ApiResponse(data=ExaminationResponse.model_validate(exam))
-
-
-@router.put("/{exam_id}", response_model=ApiResponse[ExaminationResponse])
-@require_permission("examination:update")
-async def update_examination(
-    exam_id: int,
-    update_data: ExaminationUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    exam_service = ExaminationService(db)
-    exam = exam_service.update_examination(exam_id, update_data)
-    return ApiResponse(data=ExaminationResponse.model_validate(exam), message="检查信息更新成功")
-
-
-@router.post("/{exam_id}/image-quality", response_model=ApiResponse[ImageQualityResponse])
-@require_permission("examination:update")
-async def update_image_quality(
-    exam_id: int,
-    iq_data: ImageQualityCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    exam_service = ExaminationService(db)
-    iq = exam_service.update_image_quality(exam_id, iq_data)
-    return ApiResponse(data=ImageQualityResponse.model_validate(iq), message="图像质量信息更新成功")
-
-
-@router.post("/{exam_id}/birads-report", response_model=ApiResponse[BIRADSReportResponse])
-@require_permission("examination:update")
-async def update_birads_report(
-    exam_id: int,
-    br_data: BIRADSReportCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    exam_service = ExaminationService(db)
-    br = exam_service.update_birads_report(exam_id, br_data)
-    return ApiResponse(data=BIRADSReportResponse.model_validate(br), message="BI-RADS报告信息更新成功")
 
 
 @router.get("/statistics/daily", response_model=ApiResponse[List[dict]])
@@ -194,3 +143,54 @@ async def run_auto_qa(
     exam_service = ExaminationService(db)
     processed = exam_service.run_auto_qa(exam_ids)
     return ApiResponse(data={"processed_count": processed}, message=f"完成 {processed} 条检查的自动质控")
+
+
+@router.get("/{exam_id}", response_model=ApiResponse[ExaminationResponse])
+@require_permission("examination:read")
+async def get_examination(
+    exam_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    exam_service = ExaminationService(db)
+    exam = exam_service.get_examination_with_details(exam_id)
+    return ApiResponse(data=ExaminationResponse.model_validate(exam))
+
+
+@router.put("/{exam_id}", response_model=ApiResponse[ExaminationResponse])
+@require_permission("examination:update")
+async def update_examination(
+    exam_id: int,
+    update_data: ExaminationUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    exam_service = ExaminationService(db)
+    exam = exam_service.update_examination(exam_id, update_data)
+    return ApiResponse(data=ExaminationResponse.model_validate(exam), message="检查信息更新成功")
+
+
+@router.post("/{exam_id}/image-quality", response_model=ApiResponse[ImageQualityResponse])
+@require_permission("examination:update")
+async def update_image_quality(
+    exam_id: int,
+    iq_data: ImageQualityCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    exam_service = ExaminationService(db)
+    iq = exam_service.update_image_quality(exam_id, iq_data)
+    return ApiResponse(data=ImageQualityResponse.model_validate(iq), message="图像质量信息更新成功")
+
+
+@router.post("/{exam_id}/birads-report", response_model=ApiResponse[BIRADSReportResponse])
+@require_permission("examination:update")
+async def update_birads_report(
+    exam_id: int,
+    br_data: BIRADSReportCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    exam_service = ExaminationService(db)
+    br = exam_service.update_birads_report(exam_id, br_data)
+    return ApiResponse(data=BIRADSReportResponse.model_validate(br), message="BI-RADS报告信息更新成功")

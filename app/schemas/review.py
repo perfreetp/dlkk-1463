@@ -74,7 +74,8 @@ class ReviewStatsResponse(BaseModel):
 class ReviewTaskBase(BaseModel):
     hospital_id: int = Field(..., description="院区ID")
     examination_id: Optional[int] = Field(None, description="检查ID")
-    assignee_id: int = Field(..., description="被分配人ID")
+    anomaly_id: Optional[int] = Field(None, description="异常记录ID")
+    assignee_id: Optional[int] = Field(None, description="被分配人ID")
 
     task_code: Optional[str] = Field(None, max_length=100, description="任务编码")
     task_type: str = Field(..., max_length=50, description="任务类型")
@@ -88,6 +89,7 @@ class ReviewTaskBase(BaseModel):
     check_items: Optional[List[Dict[str, Any]]] = Field(None, description="检查项")
 
     due_date: Optional[date] = Field(None, description="截止日期")
+    deadline: Optional[date] = Field(None, description="截止日期(别名)")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -120,7 +122,7 @@ class ReviewTaskResponse(ReviewTaskBase):
     status: str
     workflow_state: str
 
-    assigned_at: datetime
+    assigned_at: Optional[datetime] = None
     accepted_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -204,6 +206,8 @@ class ReviewRecordResponse(ReviewRecordBase):
 
 class RectificationBase(BaseModel):
     review_task_id: int = Field(..., description="复核任务ID")
+    anomaly_id: Optional[int] = Field(None, description="异常记录ID")
+    hospital_id: Optional[int] = Field(None, description="院区ID")
 
     title: str = Field(..., max_length=200, description="整改标题")
     description: Optional[str] = Field(None, description="整改描述")
@@ -215,6 +219,7 @@ class RectificationBase(BaseModel):
     priority: Optional[str] = Field("high", max_length=20, description="优先级")
 
     responsible_person: Optional[str] = Field(None, max_length=100, description="责任人")
+    responsible_person_id: Optional[int] = Field(None, description="责任人ID")
     responsible_department: Optional[str] = Field(None, max_length=200, description="责任部门")
 
     implementation_plan: Optional[str] = Field(None, description="实施方案")

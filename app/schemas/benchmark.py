@@ -181,7 +181,7 @@ class BenchmarkQueryParams(BaseModel):
     hospital_ids: Optional[List[int]] = Field(None, description="院区ID列表")
     benchmark_year: Optional[int] = Field(None, description="年份")
     benchmark_month: Optional[int] = Field(None, description="月份")
-    rank_level: Optional[str] = Field(None, description="排名等级")
+    performance_level: Optional[str] = Field(None, description="绩效等级")
     start_date: Optional[date] = Field(None, description="开始日期")
     end_date: Optional[date] = Field(None, description="结束日期")
     benchmark_type: Optional[str] = Field(None, description="对标类型")

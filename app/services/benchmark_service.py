@@ -13,17 +13,17 @@ from ..models import (
     AnomalyRecord,
     PersistentAnomalyRoom,
     BenchmarkData,
-    ExcellentCase,
+    BestPractice,
     HighFrequencyDefect,
 )
 from ..schemas import (
     BenchmarkDataCreate,
-    ExcellentCaseCreate,
-    ExcellentCaseUpdate,
+    BestPracticeCreate,
+    BestPracticeUpdate,
     BenchmarkQueryParams,
     BenchmarkComparisonResponse,
     PersistentAnomalyRoomResponse,
-    ExcellentCaseResponse,
+    BestPracticeResponse,
     HighFrequencyDefectResponse,
 )
 from ..core.exceptions import NotFoundError, BusinessError
@@ -76,6 +76,8 @@ class BenchmarkService:
                 benchmark_year=year,
                 benchmark_month=month,
                 benchmark_period=f"{year}年{month}月",
+                benchmark_date=date(year, month, 1),
+                benchmark_type="hospital",
                 data_start_date=start_date,
                 data_end_date=end_date,
                 **data,
@@ -111,18 +113,17 @@ class BenchmarkService:
         if total == 0:
             return {
                 "total_examinations": 0,
-                "position_complete_rate": 0,
+                "position_pass_count": 0,
+                "position_pass_rate": 0,
+                "quality_pass_count": 0,
                 "quality_pass_rate": 0,
+                "report_standard_count": 0,
                 "report_standard_rate": 0,
+                "anomaly_count": 0,
                 "anomaly_rate": 0,
-                "average_quality_score": 0,
-                "average_description_score": 0,
-                "average_dose": 0,
-                "high_severity_rate": 0,
-                "correction_rate": 0,
-                "task_completion_rate": 0,
-                "rectification_pass_rate": 0,
-                "composite_score": 0,
+                "avg_dose": 0,
+                "avg_ag_dose": 0,
+                "overall_score": 0,
             }
 
         position_complete = self.db.query(func.count(ImageQuality.id)).join(Examination).filter(
@@ -230,7 +231,7 @@ class BenchmarkService:
         task_rate = calculate_percentage(completed_tasks, total_tasks) if total_tasks else 100
         rect_rate = calculate_percentage(passed_rects, total_rects) if total_rects else 100
 
-        composite_score = (
+        overall_score = (
             position_rate * 0.25 +
             quality_rate * 0.25 +
             report_rate * 0.20 +
@@ -240,18 +241,17 @@ class BenchmarkService:
 
         return {
             "total_examinations": total,
-            "position_complete_rate": position_rate,
+            "position_pass_count": position_complete,
+            "position_pass_rate": position_rate,
+            "quality_pass_count": quality_pass,
             "quality_pass_rate": quality_rate,
+            "report_standard_count": report_standard,
             "report_standard_rate": report_rate,
+            "anomaly_count": total_anomalies,
             "anomaly_rate": anomaly_rate,
-            "average_quality_score": round(avg_quality, 2),
-            "average_description_score": round(avg_description, 2),
-            "average_dose": round(avg_dose, 3),
-            "high_severity_rate": high_sev_rate,
-            "correction_rate": correction_rate,
-            "task_completion_rate": task_rate,
-            "rectification_pass_rate": rect_rate,
-            "composite_score": round(composite_score, 2),
+            "avg_dose": round(avg_dose, 3),
+            "avg_ag_dose": round(avg_dose, 3),
+            "overall_score": round(overall_score, 2),
         }
 
     def _update_benchmark_ranks(self, year: int, month: int):
@@ -259,22 +259,22 @@ class BenchmarkService:
             BenchmarkData.benchmark_year == year,
             BenchmarkData.benchmark_month == month,
             BenchmarkData.is_deleted == False,
-        ).order_by(BenchmarkData.composite_score.desc()).all()
+        ).order_by(BenchmarkData.overall_score.desc()).all()
 
         for idx, benchmark in enumerate(benchmarks, 1):
-            benchmark.composite_rank = idx
+            benchmark.overall_rank = idx
             benchmark.percentile = round(((len(benchmarks) - idx + 1) / len(benchmarks)) * 100, 2)
 
             if idx == 1:
-                benchmark.rank_level = "excellent"
+                benchmark.performance_level = "excellent"
             elif idx <= len(benchmarks) * 0.25:
-                benchmark.rank_level = "good"
+                benchmark.performance_level = "good"
             elif idx <= len(benchmarks) * 0.5:
-                benchmark.rank_level = "average"
+                benchmark.performance_level = "average"
             elif idx <= len(benchmarks) * 0.75:
-                benchmark.rank_level = "below_average"
+                benchmark.performance_level = "below_average"
             else:
-                benchmark.rank_level = "poor"
+                benchmark.performance_level = "poor"
 
         self.db.commit()
 
@@ -293,9 +293,9 @@ class BenchmarkService:
         if query_params.benchmark_month:
             query = query.filter(BenchmarkData.benchmark_month == query_params.benchmark_month)
         if query_params.rank_level:
-            query = query.filter(BenchmarkData.rank_level == query_params.rank_level)
+            query = query.filter(BenchmarkData.performance_level == query_params.rank_level)
 
-        benchmarks = query.order_by(BenchmarkData.composite_rank.asc()).all()
+        benchmarks = query.order_by(BenchmarkData.overall_rank.asc()).all()
 
         group_stats = self._calculate_group_stats(benchmarks)
 
@@ -312,18 +312,13 @@ class BenchmarkService:
             return {}
 
         fields = [
-            "position_complete_rate",
+            "position_pass_rate",
             "quality_pass_rate",
             "report_standard_rate",
             "anomaly_rate",
-            "average_quality_score",
-            "average_description_score",
-            "average_dose",
-            "high_severity_rate",
-            "correction_rate",
-            "task_completion_rate",
-            "rectification_pass_rate",
-            "composite_score",
+            "avg_dose",
+            "avg_ag_dose",
+            "overall_score",
         ]
 
         stats = {}
@@ -347,18 +342,18 @@ class BenchmarkService:
 
         query = self.db.query(
             Room.id.label("room_id"),
+            Room.code.label("room_code"),
             Room.name.label("room_name"),
             Room.hospital_id,
-            Equipment.id.label("equipment_id"),
-            Equipment.name.label("equipment_name"),
+            Hospital.name.label("hospital_name"),
             AnomalyRecord.anomaly_type,
             func.count(AnomalyRecord.id).label("anomaly_count"),
+        ).join(
+            Hospital, Hospital.id == Room.hospital_id,
         ).join(
             Examination, Examination.room_id == Room.id,
         ).join(
             AnomalyRecord, AnomalyRecord.examination_id == Examination.id,
-        ).outerjoin(
-            Equipment, Equipment.id == Examination.equipment_id,
         ).filter(
             Room.is_deleted == False,
             Examination.is_deleted == False,
@@ -373,10 +368,10 @@ class BenchmarkService:
 
         results = query.group_by(
             Room.id,
+            Room.code,
             Room.name,
             Room.hospital_id,
-            Equipment.id,
-            Equipment.name,
+            Hospital.name,
             AnomalyRecord.anomaly_type,
         ).having(
             func.count(AnomalyRecord.id) >= 5 * consecutive_months,
@@ -404,23 +399,25 @@ class BenchmarkService:
                 existing.anomaly_count = row.anomaly_count
                 existing.anomaly_rate = anomaly_rate
                 existing.consecutive_months = consecutive_months
-                existing.last_detected_at = datetime.utcnow()
+                existing.last_detected_date = end_date
+                existing.total_examinations_count = total_exams
                 persistent_rooms.append(existing)
             else:
                 severity = "high" if anomaly_rate > 30 else "medium"
                 persistent = PersistentAnomalyRoom(
                     hospital_id=row.hospital_id,
+                    hospital_name=row.hospital_name,
                     room_id=row.room_id,
+                    room_code=row.room_code,
                     room_name=row.room_name,
-                    equipment_id=row.equipment_id,
-                    equipment_name=row.equipment_name,
                     anomaly_type=row.anomaly_type,
                     anomaly_count=row.anomaly_count,
                     consecutive_months=consecutive_months,
+                    first_detected_date=start_date,
+                    last_detected_date=end_date,
+                    total_examinations_count=total_exams,
                     anomaly_rate=anomaly_rate,
                     severity_level=severity,
-                    detection_period_start=start_date,
-                    detection_period_end=end_date,
                     rectification_status="pending",
                     is_resolved=False,
                     progress=0,
@@ -485,7 +482,7 @@ class BenchmarkService:
 
         if update_data.get("rectification_status") == "resolved":
             room.is_resolved = True
-            room.resolved_at = datetime.utcnow()
+            room.resolved_date = date.today()
 
         self.db.commit()
         self.db.refresh(room)
@@ -493,32 +490,26 @@ class BenchmarkService:
 
     def create_excellent_case(
         self,
-        case_data: ExcellentCaseCreate,
+        case_data: BestPracticeCreate,
         creator_id: Optional[int] = None,
-    ) -> ExcellentCase:
-        if case_data.examination_id:
-            exam = self.db.query(Examination).filter(
-                Examination.id == case_data.examination_id,
-                Examination.is_deleted == False,
-            ).first()
-            if not exam:
-                raise NotFoundError(f"检查不存在: {case_data.examination_id}")
-
-        case = ExcellentCase(**case_data.model_dump())
-        case.created_by = creator_id
-        case.is_approved = False
+    ) -> BestPractice:
+        case = BestPractice(**case_data.model_dump())
+        hospital = self.db.query(Hospital).filter(Hospital.id == case_data.hospital_id).first()
+        if hospital:
+            case.hospital_name = hospital.name
+        case.status = "draft"
 
         self.db.add(case)
         self.db.commit()
         self.db.refresh(case)
 
-        logger.info(f"Created excellent case {case.id}")
+        logger.info(f"Created best practice {case.id}")
         return case
 
-    def get_excellent_case(self, case_id: int) -> ExcellentCase:
-        case = self.db.query(ExcellentCase).filter(
-            ExcellentCase.id == case_id,
-            ExcellentCase.is_deleted == False,
+    def get_excellent_case(self, case_id: int) -> BestPractice:
+        case = self.db.query(BestPractice).filter(
+            BestPractice.id == case_id,
+            BestPractice.is_deleted == False,
         ).first()
         if not case:
             raise NotFoundError(f"优秀案例不存在: {case_id}")
@@ -533,44 +524,43 @@ class BenchmarkService:
         keyword: Optional[str] = None,
         skip: int = 0,
         limit: int = 20,
-    ) -> Tuple[List[ExcellentCase], int]:
-        query = self.db.query(ExcellentCase).filter(ExcellentCase.is_deleted == False)
+    ) -> Tuple[List[BestPractice], int]:
+        query = self.db.query(BestPractice).filter(BestPractice.is_deleted == False)
 
         if hospital_id:
-            query = query.filter(ExcellentCase.hospital_id == hospital_id)
+            query = query.filter(BestPractice.hospital_id == hospital_id)
         if case_type:
-            query = query.filter(ExcellentCase.case_type == case_type)
+            query = query.filter(BestPractice.practice_type == case_type)
         if category:
-            query = query.filter(ExcellentCase.category == category)
+            query = query.filter(BestPractice.category == category)
         if is_approved is not None:
-            query = query.filter(ExcellentCase.is_approved == is_approved)
+            query = query.filter(BestPractice.status == ("approved" if is_approved else "draft"))
         if keyword:
             keyword = f"%{keyword}%"
             query = query.filter(
                 or_(
-                    ExcellentCase.title.ilike(keyword),
-                    ExcellentCase.description.ilike(keyword),
-                    ExcellentCase.keywords.ilike(keyword),
+                    BestPractice.title.ilike(keyword),
+                    BestPractice.description.ilike(keyword),
                 )
             )
 
         total = query.count()
-        cases = query.order_by(ExcellentCase.created_at.desc()).offset(skip).limit(limit).all()
+        cases = query.order_by(BestPractice.created_at.desc()).offset(skip).limit(limit).all()
         return cases, total
 
     def update_excellent_case(
         self,
         case_id: int,
-        update_data: ExcellentCaseUpdate,
+        update_data: BestPracticeUpdate,
         operator_id: Optional[int] = None,
-    ) -> ExcellentCase:
+    ) -> BestPractice:
         case = self.get_excellent_case(case_id)
 
         update_dict = update_data.model_dump(exclude_unset=True)
         for key, value in update_dict.items():
             setattr(case, key, value)
 
-        if update_data.is_approved and not case.is_approved:
+        if update_data.status == "approved" and case.status != "approved":
             case.approved_by = operator_id
             case.approved_at = datetime.utcnow()
 
@@ -679,7 +669,7 @@ class BenchmarkService:
         if not benchmarks:
             return practices
 
-        best_position = max(benchmarks, key=lambda b: b.position_complete_rate)
+        best_position = max(benchmarks, key=lambda b: b.position_pass_rate)
         best_quality = max(benchmarks, key=lambda b: b.quality_pass_rate)
         best_report = max(benchmarks, key=lambda b: b.report_standard_rate)
         best_low_anomaly = min(benchmarks, key=lambda b: b.anomaly_rate)
@@ -690,8 +680,8 @@ class BenchmarkService:
                 "title": "体位完整性最佳实践",
                 "hospital_name": best_position.hospital_name,
                 "metric_name": "体位完整率",
-                "metric_value": best_position.position_complete_rate,
-                "description": f"{best_position.hospital_name}体位完整率达到{best_position.position_complete_rate}%，建议学习其投照技师培训方法和检查核对流程。",
+                "metric_value": best_position.position_pass_rate,
+                "description": f"{best_position.hospital_name}体位完整率达到{best_position.position_pass_rate}%，建议学习其投照技师培训方法和检查核对流程。",
             },
             "image_quality": {
                 "category": "quality",
