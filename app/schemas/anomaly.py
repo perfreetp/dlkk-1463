@@ -58,6 +58,8 @@ class AnomalyRecordResponse(AnomalyRecordBase):
 
     review_task_id: Optional[int] = None
     review_task_status: Optional[str] = None
+    rectification_id: Optional[int] = None
+    review_status: Optional[str] = None
 
     created_at: datetime
     updated_at: datetime
@@ -118,6 +120,8 @@ class AnomalyStatsResponse(BaseModel):
     quality_anomaly_count: int = 0
     report_anomaly_count: int = 0
     similarity_anomaly_count: int = 0
+    report_consistency_anomaly_count: int = 0
+    description_discrepancy_anomaly_count: int = 0
 
     critical_count: int = 0
     high_count: int = 0

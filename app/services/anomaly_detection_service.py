@@ -853,6 +853,8 @@ class AnomalyDetectionService:
         quality_count = query.filter(AnomalyRecord.anomaly_type == "quality").count()
         report_count = query.filter(AnomalyRecord.anomaly_type == "report").count()
         similarity_count = query.filter(AnomalyRecord.anomaly_type == "similarity").count()
+        report_consistency_count = query.filter(AnomalyRecord.anomaly_type == "report_consistency").count()
+        description_discrepancy_count = query.filter(AnomalyRecord.anomaly_type == "description_discrepancy").count()
 
         critical = query.filter(AnomalyRecord.severity_level == "critical").count()
         high = query.filter(AnomalyRecord.severity_level == "high").count()
@@ -865,6 +867,8 @@ class AnomalyDetectionService:
             "quality": quality_count,
             "report": report_count,
             "similarity": similarity_count,
+            "report_consistency": report_consistency_count,
+            "description_discrepancy": description_discrepancy_count,
         }
         by_severity = {
             "critical": critical,
@@ -898,6 +902,8 @@ class AnomalyDetectionService:
             quality_anomaly_count=quality_count,
             report_anomaly_count=report_count,
             similarity_anomaly_count=similarity_count,
+            report_consistency_anomaly_count=report_consistency_count,
+            description_discrepancy_anomaly_count=description_discrepancy_count,
             critical_count=critical,
             high_count=high,
             medium_count=medium,

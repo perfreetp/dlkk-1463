@@ -346,8 +346,18 @@ class QualityRuleService:
                 (QualityRule.code.like(keyword_pattern)) | (QualityRule.name.like(keyword_pattern))
             )
 
-        total = query.count()
-        rules = query.order_by(QualityRule.created_at.desc()).offset(skip).limit(limit).all()
+        all_rules = query.order_by(QualityRule.created_at.desc()).all()
+
+        if hospital_id:
+            all_rules = [
+                r for r in all_rules
+                if r.is_standard
+                or not r.applicable_hospitals
+                or hospital_id in r.applicable_hospitals
+            ]
+
+        total = len(all_rules)
+        rules = all_rules[skip : skip + limit]
         return rules, total
 
     def get_active_rules(

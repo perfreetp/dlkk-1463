@@ -48,6 +48,40 @@ class AnomalyRecord(BaseModel, TimestampMixin, SoftDeleteMixin):
     review_task = relationship("ReviewTask", back_populates="anomalies")
     review_records = relationship("ReviewRecord", back_populates="anomaly")
 
+    @property
+    def review_status(self) -> str:
+        if self.review_task:
+            task_status = self.review_task.status
+            if task_status in ["pending", "pending_assignment", "assigned", "rejected"]:
+                return "待复核"
+            elif task_status in ["accepted", "in_progress", "processing"]:
+                return "复核中"
+            elif task_status in ["reviewed", "needs_revision"]:
+                return "复核完成待处理"
+            elif task_status == "in_rectification":
+                return "待整改"
+            elif task_status == "completed":
+                if self.rectification_id:
+                    return "整改中"
+                return "已完成"
+            elif task_status == "verified":
+                return "已完成"
+            else:
+                return "复核中"
+        if self.status == "pending":
+            return "待复核"
+        if self.status == "under_review":
+            return "复核中"
+        if self.status == "confirmed":
+            if self.correction_status == "corrected":
+                return "已完成"
+            return "待整改"
+        if self.status == "rejected" or self.is_false_positive:
+            return "已完成"
+        if self.status == "completed":
+            return "已完成"
+        return "待复核"
+
 
 class SimilarityCheck(BaseModel, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "similarity_checks"

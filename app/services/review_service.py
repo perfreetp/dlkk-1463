@@ -1,5 +1,7 @@
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, date, timedelta
+import random
+import string
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 
@@ -97,6 +99,12 @@ class ReviewService:
 
         self.db.add(task)
         self.db.flush()
+
+        if not task.task_code:
+            timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+            random_suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+            task.task_code = f"REV{timestamp}{random_suffix}"
+            self.db.flush()
 
         if exam:
             exam.status = "under_review"
@@ -244,34 +252,37 @@ class ReviewService:
 
         if review_result == "confirmed" and record_data.needs_rectification:
             try:
-                rect_deadline = record_data.rectification_deadline or (
-                    datetime.utcnow() + timedelta(days=7)
-                ).date()
-                for anomaly in task.anomalies:
-                    existing_rect = self.db.query(Rectification).filter(
-                        Rectification.review_task_id == task.id,
-                        Rectification.is_deleted == False,
-                    ).first()
-                    if not existing_rect:
-                        rect_code = f"RECT{datetime.utcnow().strftime('%Y%m%d%H%M%S')}{task.id}"
-                        rectification = Rectification(
-                            review_task_id=task.id,
-                            anomaly_id=anomaly.id,
-                            rectification_code=rect_code,
-                            title=f"整改-{task.title}",
-                            description=task.description or anomaly.description,
-                            deadline=rect_deadline,
-                            status="pending",
-                            priority=task.priority or "high",
-                            hospital_id=task.hospital_id,
-                            responsible_person_id=anomaly.technician_id,
-                            anomaly_type=anomaly.anomaly_type,
-                            severity_level=anomaly.severity_level,
-                            created_by=operator_id,
-                        )
-                        self.db.add(rectification)
-                        anomaly.rectification_id = rectification.id
-                        task.status = "completed"
+                existing_rect = self.db.query(Rectification).filter(
+                    Rectification.review_task_id == task.id,
+                    Rectification.is_deleted == False,
+                ).first()
+                if not existing_rect and task.anomalies:
+                    anomaly = task.anomalies[0]
+                    rect_deadline = record_data.rectification_deadline or (
+                        datetime.utcnow() + timedelta(days=7)
+                    ).date()
+                    rect_code = f"RECT{datetime.utcnow().strftime('%Y%m%d%H%M%S')}{task.id}"
+                    rectification = Rectification(
+                        review_task_id=task.id,
+                        anomaly_id=anomaly.id,
+                        rectification_code=rect_code,
+                        title=f"整改-{task.title}",
+                        description=task.description or anomaly.description,
+                        deadline=rect_deadline,
+                        status="pending",
+                        priority=task.priority or "high",
+                        hospital_id=task.hospital_id,
+                        responsible_person_id=anomaly.technician_id,
+                        anomaly_type=anomaly.anomaly_type,
+                        severity_level=anomaly.severity_level,
+                        created_by=operator_id,
+                    )
+                    self.db.add(rectification)
+                    self.db.flush()
+                    for a in task.anomalies:
+                        a.rectification_id = rectification.id
+                    task.status = "in_rectification"
+                    task.workflow_state = "rectification"
             except Exception as e:
                 logger.error(f"Failed to auto-create rectification for task {task_id}: {e}")
 
@@ -448,16 +459,17 @@ class ReviewService:
             rectification.closed_at = datetime.utcnow()
             rectification.closed_by = operator_id
 
-            if rectification.anomaly_id:
-                anomaly = self.db.query(AnomalyRecord).filter(AnomalyRecord.id == rectification.anomaly_id).first()
-                if anomaly:
-                    anomaly.correction_status = "corrected"
-                    anomaly.corrected_at = datetime.utcnow()
-
             if rectification.review_task_id:
                 task = self.db.query(ReviewTask).filter(ReviewTask.id == rectification.review_task_id).first()
                 if task:
                     task.status = "verified"
+                    task.workflow_state = "verified"
+                    if not task.completed_at:
+                        task.completed_at = datetime.utcnow()
+                    for anomaly in task.anomalies:
+                        anomaly.correction_status = "corrected"
+                        anomaly.corrected_at = datetime.utcnow()
+                        anomaly.status = "completed"
         else:
             rectification.status = "rejected"
             rectification.verification_result = "failed"
